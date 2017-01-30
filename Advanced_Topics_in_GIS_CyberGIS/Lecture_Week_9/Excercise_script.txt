@@ -1,0 +1,226 @@
+A. Operating HDFS with rhdfs
+#Getting ready: Installing rhdfs into R, and validate that you can initial HDFS via the hdfs.init function.
+
+$ R
+> Sys.setenv(HADOOP_CMD="/usr/bin/hadoop")
+> Sys.setenv(HADOOP_STREAMING="/usr/hdp/2.3.2.0-2602/hadoop-mapreduce/hadoop-streaming-2.7.1.2.3.2.0-2602.jar")
+> library(rhdfs)
+> hdfs.init()
+
+# Manipulating files stored on HDFS, as follows:
+# dfs.put: Copy a file from the local filesystem to HDFS:
+>hdfs.put('word.txt', './')
+# hdfs.ls: Read the list of directory from HDFS:
+> hdfs.ls('./')
+# hdfs.copy: Copy a file from one HDFS directory to another:
+> hdfs.copy('word.txt', 'wordcnt.txt')
+# hdfs.move : Move a file from one HDFS directory to another:
+> hdfs.move('wordcnt.txt', './data/wordcnt.txt')
+# hdfs.delete: Delete an HDFS directory from R:
+> hdfs.delete('./data/')
+# hdfs.get: Download a file from HDFS to a local filesystem:
+> hdfs.get(word.txt', '/home/user_name/word.txt’)
+
+
+B. Parallel R
+#Getting ready: load modules, install parallel packages, and set up environmental setting.
+$module avail
+$module load binutils/2.25 openblas/0.2.14 R/3.2.1-openmpi geos
+
+> install.packages(“snow”)
+> install.packages(“Rmpi”)
+> install.packages(“foreach”)
+> install.packages(“doSNOW”)
+> install.packages(“parallel”)
+> install.packages(“boot”)
+> install.packages(“maptools”)
+> install.packages(“spdep”)
+#You select a CRAN mirror for installing packages (e.g., USA(IN)).
+
+~cgtrnxx$ vim ~/.bashrc
+#Put the information to load module R and then save the file
+module load R
+
+
+#Define a simple R function
+myProc <- function(size=100000) {
+#Load a large vector
+vec <- rnorm(size)
+#Now sleep on it
+Sys.sleep(2)
+#Now sum the vec values
+return(sum(vec))
+}
+
+1. Serial - apply
+ptm <- proc.time()
+result <- sapply(1:10, function(i) myProc())
+proc.time() - ptm
+
+
+
+2. parallel package: mclapply
+
+require(parallel)
+ptm <- proc.time()
+result <- mclapply(1:10, function(i) myProc(), mc.cores=10)
+proc.time() - ptm
+
+
+3. snow package
+require(snow)
+hostnames <- rep('localhost', 10)
+cluster <- makeSOCKcluster(hostnames)
+clusterExport(cluster, list('myProc'))
+ptm <- proc.time()
+result <- clusterApply(cluster, 1:10, function(i) myProc())
+proc.time() - ptm
+stopCluster(cluster)
+
+3.1 Load balancing
+require(snow)
+#clusterApplyLB
+hostnames <- rep('localhost', 4)
+cluster <- makeSOCKcluster(hostnames)
+clusterExport(cluster, list('myProc'))
+set.seed(777442)
+sleeptime <- abs(rnorm(15,15,15))
+tm <- snow.time(clusterApplyLB(cluster, sleeptime, Sys.sleep))
+plot(tm)
+stopCluster(cluster)
+
+#clusterApply
+hostnames <- rep('localhost', 4)
+cluster <- makeSOCKcluster(hostnames)
+clusterExport(cluster, list('myProc'))
+set.seed(777442)
+sleeptime <- abs(rnorm(15,15,15))
+tm <- snow.time(clusterApply(cluster, sleeptime, Sys.sleep))
+plot(tm)
+stopCluster(cluster)
+
+
+
+4. foreach + snow package
+require(foreach)
+require(doSNOW)
+## Loading required package: doSNOW
+hostnames <- rep('localhost', 10)
+cluster <- makeSOCKcluster(hostnames)
+registerDoSNOW(cluster)
+ptm <- proc.time()
+result <- foreach(i=1:10, .combine=c) %dopar% {
+myProc()
+}
+proc.time() - ptm
+stopCluster(cluster)
+
+
+5.  Executing snow programs on a cluster with Rmpi 
+
+require(Rmpi)
+require(snow)
+
+# Initialize SNOW using MPI communication. The first line will get the
+# number of MPI processes the scheduler assigned to us. Everything else 
+# is standard SNOW
+
+#np <- mpi.universe.size()
+#cluster <- makeMPIcluster(np)
+
+cluster <- makeCluster(8, type="MPI")
+
+# Print the hostname for each cluster member
+sayhello <- function()
+{
+    info <- Sys.info()[c("nodename", "machine")]
+    paste("Hello from", info[1], "with CPU type", info[2])
+}
+
+names <- clusterCall(cluster, sayhello)
+print(unlist(names))
+
+# Compute row sums in parallel using all processes,
+# then a grand sum at the end on the master process
+parallelSum <- function(m, n)
+{
+    A <- matrix(rnorm(m*n), nrow = m, ncol = n)
+    row.sums <- parApply(cluster, A, 1, sum)
+    print(sum(row.sums))
+}
+
+parallelSum(500, 500)
+
+stopCluster(cluster)
+mpi.exit()
+#exit R
+quit()
+
+6.  foreach + snow package for multi-node
+#Set up environmental setting (Before setting the environmental variable, you must quit R)
+vim ~/.bashrc
+
+#Put the information to load module R and then save the file
+module load R
+
+
+#Assign the number of nodes. 
+ qsub -I -l walltime=48:00:00,nodes=1:ppn=20 -N kde7_2
+#An example of requesting one node with 20 cores for 30 mins on devel queue is   
+ qsub -I -l nodes=1:ppn=20,walltime=00:30:00 -q devel 
+
+
+#Start R
+module load binutils/2.25 openblas/0.2.14 R/3.2.1-openmpi
+R
+require(foreach)
+require(doSNOW)
+
+#Define a simple R function
+myProc <- function(size=1000) {
+#Load a large vector
+vec <- rnorm(size)
+#Now sleep on it
+Sys.sleep(2)
+#Now sum the vec values
+return(sum(vec))
+}
+
+#Get backend hostnames
+nodelist <- Sys.getenv("PBS_NODEFILE")
+hostnames <- scan(nodelist, what="", sep="\n")
+
+#Set reps to match core count'
+num.cores <- 10
+hostnames <- rep(hostnames, each=num.cores)
+hostnames
+cluster <- makeSOCKcluster(hostnames)
+registerDoSNOW(cluster)
+ptm <- proc.time()
+result <- foreach(i=1:100, .combine=c) %dopar% {
+myProc()
+}
+proc.time() - ptm
+stopCluster(cluster)
+
+
+
+7. Bootstrap calculations
+#Serial implementation
+random.data <- matrix(rnorm(1000000), ncol = 1000)
+bmed <- function(d, n) median(d[n])
+library(boot)
+sapply(1:100, function(n) {sd(boot(random.data[, n], bmed, R = 2000)$t)})
+
+
+#Parallel implementation
+random.data <- matrix(rnorm(1000000), ncol = 1000)
+bmed <- function(d, n) median(d[n])
+library(boot)
+cluster = makeCluster(10, type = "SOCK")
+registerDoSNOW(cluster)
+clusterExport(cluster, c("random.data", "bmed"))
+results = foreach(n = 1:100, .combine = c) %dopar% {
+     library(boot); sd(boot(random.data[, n], bmed, R = 2000)$t)
+}
+stopCluster(cluster)

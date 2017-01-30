@@ -1,0 +1,176 @@
+Before you begin:
+1. Environmental variable setting
+#vi .bashrc
+module load R
+
+2. module load
+module load binutils/2.25 openblas/0.2.14 R/3.2.1-openmpi geos
+
+3. Install R packages
+> install.packages(c("snow", "Rmpi", "foreach", "doSNOW", "parallel", "boot", "maptools", "spdep”))
+
+LAB 1.
+
+Step 1: 
+#Define a simple R function
+myProc <- function(size=10000000) {
+#Load a large vector
+vec <- rnorm(size)
+#Now sleep on it
+Sys.sleep(2)
+#Now sum the vec values
+return(sum(vec))
+}
+
+Step 2: Serial - apply
+ptm <- proc.time()
+result <- sapply(1:10, function(i) myProc())
+proc.time() - ptm
+
+
+
+Step 3: parallel package: mclapply
+
+require(parallel)
+ptm <- proc.time()
+result <- mclapply(1:10, function(i) myProc(), mc.cores=10)
+proc.time() - ptm
+
+
+Step 4: snow package
+require(snow)
+hostnames <- rep('localhost', 10)
+cluster <- makeSOCKcluster(hostnames)
+clusterExport(cluster, list('myProc'))
+ptm <- proc.time()
+result <- clusterApply(cluster, 1:10, function(i) myProc())
+proc.time() - ptm
+stopCluster(cluster)
+
+
+Step 5: foreach + snow package
+require(foreach)
+require(doSNOW)
+## Loading required package: doSNOW
+hostnames <- rep('localhost', 10)
+cluster <- makeSOCKcluster(hostnames)
+registerDoSNOW(cluster)
+ptm <- proc.time()
+result <- foreach(i=1:10, .combine=c) %dopar% {
+myProc()
+}
+proc.time() - ptm
+stopCluster(cluster)
+
+
+
+Step 6:. Bootstrap calculations
+#Serial implementation
+random.data <- matrix(rnorm(1000000), ncol = 1000)
+bmed <- function(d, n) median(d[n])
+library(boot)
+ptm <- proc.time()
+sapply(1:100, function(n) {sd(boot(random.data[, n], bmed, R = 2000)$t)})
+proc.time() - ptm
+
+#Parallel implementation
+library(boot)
+require(foreach)
+require(doSNOW)
+random.data <- matrix(rnorm(1000000), ncol = 1000)
+bmed <- function(d, n) median(d[n])
+cluster = makeCluster(10, type = "SOCK")
+registerDoSNOW(cluster)
+clusterExport(cluster, c("random.data", "bmed"))
+ptm <- proc.time()
+results = foreach(n = 1:100, .combine = c) %dopar% {
+     library(boot); sd(boot(random.data[, n], bmed, R = 2000)$t)
+}
+results
+proc.time() - ptm
+stopCluster(cluster)
+
+
+Lab 2. Radiation spatial autocorrelation
+
+Step 1: Moran’s I serial implementation
+require(maptools) 
+require(spdep)
+
+#an absolute filepath representing the current working directory of the R proces
+getwd()
+#set the working directory
+setwd("~/")  
+
+#Get shapefile header information in the radiation data
+getinfo.shape("dataset/Oct_17_20_proj.shp")
+#Reads data from a points shapefile
+radiation<-readShapePoints ("dataset/Oct_17_20_proj.shp")
+
+#Retrieve spatial coordinates from a Spatial object
+coords<-coordinates(radiation)
+IDs<-row.names(as(radiation, "data.frame"))
+
+#Neighbourhood contiguity by distance
+radiation_nei<-dnearneigh(coords, d1=0, d2=20, row.names=IDs)
+
+#Spatial weights for neighbours lists
+radiation_nbq_wb<-nb2listw(radiation_nei, style="W")
+
+#Moran's I test for spatial autocorrelation
+moran.test(radiation$field_5, listw=radiation_nbq_wb)
+
+
+Step 2: Moran’s I parallel implementation
+gamma <- radiation$field_5
+listw <- radiation_nbq_wb  
+nsim <- 999
+
+require(foreach)
+require(doSNOW)
+n <- length(listw$neighbours)
+S0 <- Szero(listw)
+cluster = makeCluster(10, type = "SOCK")
+registerDoSNOW(cluster)
+clusterExport(cluster, c("gamma", "listw","n","S0"))
+results = foreach(n = 1:nsim, .combine = c) %dopar% {
+ library(spdep); moran(sample(gamma), listw, n, S0,zero.policy=NULL)$I
+}
+
+
+paMoran <- function(res, x, listw, nsim,zero.policy=NULL,alternative="greater") {
+  n <- length(listw$neighbours)
+  S0 <- Szero(listw)
+
+  res[nsim+1] <- moran(x, listw, n, S0, zero.policy)$I
+  rankres <- rank(res)
+  xrank <- rankres[length(res)]
+	diff <- nsim - xrank
+	diff <- ifelse(diff > 0, diff, 0)
+
+  if (alternative == "less") 
+        	pval <- punif((diff + 1)/(nsim + 1), lower.tail=FALSE)
+    	else if (alternative == "greater") 
+        	pval <- punif((diff + 1)/(nsim + 1))
+  
+	statistic <- res[nsim+1]
+	names(statistic) <- "statistic"
+	parameter <- xrank
+	names(parameter) <- "observed rank"
+	method <- "Parallel Monte-Carlo simulation of Moran's I"
+	lres <- list(statistic=statistic, parameter=parameter,
+	    p.value=pval, alternative=alternative, method=method,res=res)  
+  	lres 
+}
+
+#Resutls
+mtest <- paMoran(results,gamma,listw,nsim)
+mtest$method
+mtest$statistic 
+mtest$parameter
+mtest$p.value
+
+
+stopCluster(cluster)
+
+
