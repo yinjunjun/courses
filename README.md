@@ -1,4 +1,4 @@
-# courses
+# Course Materials
 Geospatial Big Data Analytics
 
 This repository contains a series of course materials developed by Junjun Yin for the purpose of workshops, training and lecture.
