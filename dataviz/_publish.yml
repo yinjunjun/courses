@@ -1,0 +1,4 @@
+- source: project
+  quarto-pub:
+    - id: 720b9a06-5287-416a-921e-9fe716aa8414
+      url: https://jyin.quarto.pub/dataviz
